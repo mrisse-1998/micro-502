@@ -14,6 +14,10 @@ import lib.mapping_and_planning_examples as mapping_and_planning_examples
 import time, random
 import threading
 
+# MAXIME
+import cv2
+# END MAXIME
+
 exp_num = 4                    # 0: Coordinate Transformation, 1: PID Tuning, 2: Kalman Filter, 3: Motion Planning, 4: Project
 control_style = 'path_planner'      # 'keyboard' or 'path_planner'
 rand_env = False                # Randomise the environment
@@ -143,6 +147,7 @@ class CrazyflieInDroneDome(Supervisor):
 
         # For the assignment, randomise the positions of the drone, obstacles, goal, take-off pad and landing pad 
         if exp_num == 4:
+
 
             # Course parameters
             self.circle_centre = [4, 4]
@@ -654,6 +659,10 @@ def path_planner_thread(drone):
             dt_planner = current_time - last_planner_time
             last_planner_time = current_time
 
+            # MAXIME CODE
+            cv2.imshow("Sensor View", camera_data_copy)
+            cv2.waitKey(1)
+            # END MAXIME CODE
             new_setpoint = assignment.get_command(sensor_data_copy, camera_data_copy, dt_planner)
             
             with setpoint_lock:
@@ -661,6 +670,15 @@ def path_planner_thread(drone):
 
         time.sleep(0.01)
     
+# Maxime Code
+def find_gate_position(image):
+    print("Find gate function")
+
+    # Cette fonction devra être recopié dans my_assignement une fois fonctionnelle.
+    # On détecte les coins des gates, et on retourne le centre ainsi que le centre gauche en inertial frame.
+
+
+# End Maxime Code
 
 if __name__ == '__main__':
 
