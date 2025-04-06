@@ -30,6 +30,19 @@ def get_command(sensor_data, camera_data, dt):
     # NOTE: Displaying the camera image with cv2.imshow() will throw an error because GUI operations should be performed in the main thread.
     # If you want to display the camera image you can call it main.py.
 
+    # Initialization : if get_command has no "mode" value.
+    if not hasattr(get_command, "mode"):
+        get_command.mode = "Initialization"
+        get_command.wake_up = False
+        get_command.capture_step = 1
+        get_command.directions = []
+        get_command.positions = []
+        get_command.gates_pos = []
+        get_command.gate_index = 0 
+        
+
+        
+
     # Get the positions from the motion planner.
     # TODO : implement this after the general algorithm is done.
 
@@ -40,40 +53,335 @@ def get_command(sensor_data, camera_data, dt):
     # tol_goal = 0.25
 
 
-    mode = "Recognition"
+    
+    if get_command.mode == "Initialization":
+
+        print("Mode : Initialization")
+
+        # First capture
+        if get_command.capture_step == 1:
+            get_command.img_flux, _, p_cam, _ = next_gate_detection(camera_data)
+            get_command.directions.append(get_world_position(p_cam, sensor_data))
+            get_command.positions.append(np.array([sensor_data["x_global"], sensor_data["y_global"], sensor_data["z_global"]]))
+            get_command.last_yaw = sensor_data["yaw"]
+            get_command.t_start = time.time()
+            get_command.capture_step = 2
+            print("Captured first image")
+        
+        # Move and wait
+        elif get_command.capture_step == 2 and time.time() - get_command.t_start < 5:
+            print("Moving to second position")
+            P = get_command.positions[0]
+            control_command = [P[0], P[1], 2, get_command.last_yaw + 0.3]
+
+        # Second capture
+        elif get_command.capture_step == 2:
+            get_command.img_flux, _, p_cam, _ = next_gate_detection(camera_data)
+            get_command.directions.append(get_world_position(p_cam, sensor_data))
+            get_command.positions.append(np.array([sensor_data["x_global"], sensor_data["y_global"], sensor_data["z_global"]]))
+            get_command.last_yaw = sensor_data["yaw"]
+            get_command.t_start = time.time()
+            get_command.capture_step = 3
+            print("Captured second image")
+
+        # Move and wait
+        elif get_command.capture_step == 3 and time.time() - get_command.t_start < 5:
+            print("Moving to third position")
+            P = get_command.positions[1]
+            control_command = [P[0] - 0.2, P[1] - 1, 1, get_command.last_yaw + 0.3]
+        
+        elif get_command.capture_step == 3:
+            get_command.img_flux, _, p_cam, _ = next_gate_detection(camera_data)
+            get_command.directions.append(get_world_position(p_cam, sensor_data))
+            get_command.positions.append(np.array([sensor_data["x_global"], sensor_data["y_global"], sensor_data["z_global"]]))
+
+            # Triangulate
+            H1 = triangulate(get_command.directions[0], get_command.directions[1],
+                             get_command.positions[0], get_command.positions[1])
+            H2 = triangulate(get_command.directions[1], get_command.directions[2],
+                             get_command.positions[1], get_command.positions[2])
+    
+            get_command.H = (H1 + H2) / 2
+            get_command.gates_pos.append(get_command.H)
+            get_command.mode = "Orientation"
 
 
-    def switch(mode):
-
-        if mode == "Recognition":
-            print("MODE : Recognition lap")
-
-
-
+            # Clean all positions, directions from the first orientation
+            get_command.capture_step = 1
+            get_command.t_start = time.time()
+            get_command.directions, get_command.positions = [], []
             
-        elif mode == "Preparation":
-            print("MODE : Preparation")
-
-        elif mode == "Run":
-            print("MODE : Run")
 
 
+    if get_command.mode == "Orientation":
+        i = get_command.gate_index
+        print(f"Mode : Orientation to identify gate number {i + 2}")
+
+        if get_command.capture_step == 1 and time.time() - get_command.t_start < 10:
+            print("Move to gate pos")
+            # Move to known position
+            H = get_command.gates_pos[i]
+            control_command = [H[0], H[1], H[2], sensor_data['yaw']]
+            get_command.last_yaw = sensor_data['yaw']
+            get_command.capture_step = 1
+
+
+        elif get_command.capture_step == 1:
+            get_command.img_flux, _, p_cam, _ = next_gate_detection(camera_data)
+            if p_cam is None:
+                # Slowly scan
+                H = get_command.gates_pos[i]
+                control_command = [H[0], H[1], H[2], sensor_data['yaw'] + 0.2]
+            else:
+                get_command.directions.append(get_world_position(p_cam, sensor_data))
+                get_command.positions.append(np.array([sensor_data["x_global"], sensor_data["y_global"], sensor_data["z_global"]]))
+                get_command.capture_step = 2
+                get_command.t_start = time.time()
+                print(f"Captured first image of gate {i}")
+        
+        elif get_command.capture_step == 2 and time.time() - get_command.t_start < 10:
+            P = get_command.positions[0]
+            r = get_command.directions[0]  # direction to gate in world frame
+
+            # Compute yaw to point in direction of r (just use x and y)
+            yaw_to_gate = np.arctan2(r[1], r[0])
+            
+            # Create command
+            control_command = [P[0], P[1], P[2]+0.4, yaw_to_gate]
+        
+        # Second capture
+        elif get_command.capture_step == 2:
+            get_command.img_flux, _, p_cam, _ = next_gate_detection(camera_data)
+            get_command.directions.append(get_world_position(p_cam, sensor_data))
+            get_command.positions.append(np.array([sensor_data["x_global"], sensor_data["y_global"], sensor_data["z_global"]]))
+            get_command.capture_step = 3
+            get_command.t_start = time.time()
+            print(f"Captured second image of gate {i}")
+
+        # Move to 3rd capture
+        elif get_command.capture_step == 3 and time.time() - get_command.t_start < 10:
+            P1 = get_command.positions[0]
+            P2 = get_command.positions[1]
+            r1 = get_command.directions[0]
+            r2 = get_command.directions[1]
+
+            # # Triangulate the gate position
+            H = triangulate(r1, r2, P1, P2)
+
+            # # Compute halfway point from current position (P2)
+            mid_pos = (P2 + H) / 2
+            mid_pos[2] = H[2]  # keep same height as drone
+
+            # # Compute yaw to face the gate
+            direction_to_gate = H - P2
+            yaw_to_gate = np.arctan2(direction_to_gate[1], direction_to_gate[0])
+
+            # # Command
+            control_command = [mid_pos[0], mid_pos[1], mid_pos[2], yaw_to_gate]
+
+
+
+
+        elif get_command.capture_step == 3:
+            get_command.img_flux, _, p_cam, normale = next_gate_detection(camera_data)
+            get_command.directions.append(get_world_position(p_cam, sensor_data))
+            get_command.positions.append(np.array([sensor_data["x_global"], sensor_data["y_global"], sensor_data["z_global"]]))
+            print(f"Captured third image of gate {i}")
+
+            # Triangulate
+            H = triangulate(get_command.directions[1], get_command.directions[2],
+                             get_command.positions[1], get_command.positions[2])
+            get_command.gates_pos.append(H)
+
+            # Reset for next gate
+            get_command.capture_step = 1
+            get_command.directions.clear()
+            get_command.positions.clear()
+            get_command.gate_index += 1
+            get_command.t_start = time.time()
+
+            if get_command.gate_index >= 4:  # All gates found
+                get_command.mode = "Preparation"
+            
+
+
+    if get_command.mode == "Recognition":
+
+        print("MODE : Recognition lap")
+        
+    if get_command.mode == "Preparation":
+        print("MODE : Preparation")
+
+    if get_command.mode == "Run":
+        print("MODE : Run")
+
+
+    # Print sensor values
+    #print("\n--- Sensor Data ---")
+    #print(f"Position   : x={sensor_data['x_global']:.2f}, y={sensor_data['y_global']:.2f}, z={sensor_data['z_global']:.2f}")
+    #print(f"Velocity   : vx={sensor_data['v_x']:.2f}, vy={sensor_data['v_y']:.2f}, vz={sensor_data['v_z']:.2f}")
+    #print(f"Acceleration: ax={sensor_data['ax_global']:.2f}, ay={sensor_data['ay_global']:.2f}, az={sensor_data['az_global']:.2f}")
+    #print(f"Yaw        : {sensor_data['yaw']:.2f} rad")
  
     
-
-
-    # Take off example
-    if sensor_data['z_global'] < 0.49:
-        control_command = [sensor_data['x_global'], sensor_data['y_global'], 1.0, sensor_data['yaw']]
-        return control_command
-
     # ---- YOUR CODE HERE ----
-    control_command = [sensor_data['x_global'], sensor_data['y_global'], 1.0, sensor_data['yaw']]
+    if 'control_command' not in locals():
+        control_command = [sensor_data['x_global'], sensor_data['y_global'], sensor_data['z_global'], sensor_data['yaw']]
+    
+    cv2.imshow("Image", get_command.img_flux)
+    cv2.waitKey(1)
+
     
     return control_command # Ordered as array with: [pos_x_cmd, pos_y_cmd, pos_z_cmd, yaw_cmd] in meters and radians
 
+def triangulate(r, s, P, Q):
+    """
+    r, s: Direction vectors in world frame from camera detections
+    P, Q: Positions of drone when each image was taken
+    Returns: Estimated 3D position of the object (gate center)
+    """
+    A = np.array([[np.dot(r, r), -np.dot(s, r)],
+                  [np.dot(r, s), -np.dot(s, s)]])
+    
+    b = np.array([[-np.dot((P - Q), r)],
+                  [-np.dot((P - Q), s)]])
+    
+    lambda_sol, mu_sol = np.linalg.solve(A, b)
+
+    F = P + lambda_sol * r
+    G = Q + mu_sol * s
+    H = (F + G) / 2
+
+    return H
+
+def get_world_position(p_camera_frame, sensor_data):
+    R_C2D = ([0, 0, 1], [-1, 0, 0], [0, -1, 0])
+    R_D2W = euler2rotmat([sensor_data['roll'], sensor_data['pitch'], sensor_data['yaw']])
+    R_C2W = R_D2W @ R_C2D
+
+    p_world_frame = R_C2W @ p_camera_frame
+
+    return p_world_frame
 
 
+def next_gate_detection(camera_data):
+
+    b = camera_data[:, :, 0]
+    g = camera_data[:, :, 1]
+    r = camera_data[:, :, 2]
+
+    threshold_r = 180
+    threshold_g = 170
+    threshold_b = 170
+
+    img_th = np.where(
+    (r > threshold_r) &
+    (g < threshold_g) &
+    (b > threshold_b),
+    255, 0).astype(np.uint8)
+
+    contours, _ = cv2.findContours(img_th, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    cam_copy = camera_data.copy()
+
+    gate_pixels = None
+
+    if contours:
+
+        # Compute the largest area
+        largest_contour = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest_contour)
+
+        if area > 500:
+            cv2.drawContours(cam_copy, [largest_contour], -1, (255, 0, 0), 2)
+            gate_pixels = largest_contour.reshape(-1, 2)
+        else:
+            print("Contour too small, ignoring.")
+            return cam_copy, None, None, None
+    else:
+        return cam_copy, None, None, None
+        
+
+
+    # Using moments to get a better gate centroïd
+    M = cv2.moments(largest_contour)
+    if M["m00"] != 0:
+        centroid_x = int(M["m10"] / M["m00"])
+        centroid_y = int(M["m01"] / M["m00"])
+    else:
+        centroid_x, centroid_y = 0, 0  # fallback
+
+    centroid = np.array([centroid_x, centroid_y])
+    cv2.circle(cam_copy, (int(centroid[0]), int(centroid[1])), radius=5, color=(0, 0, 255), thickness=-1)
+
+
+    # Normale
+    # Get orientation using minAreaRect
+    rect = cv2.minAreaRect(largest_contour)
+    box = cv2.boxPoints(rect)
+    box = np.round(box).astype(int)
+
+    # Direction vector along width of rectangle (for normal computation)
+    edge1 = box[1] - box[0]
+    edge2 = box[2] - box[1]
+
+    if np.linalg.norm(edge1) > np.linalg.norm(edge2):
+        gate_direction_image = edge1
+    else:
+        gate_direction_image = edge2
+
+    gate_direction_image = gate_direction_image / np.linalg.norm(gate_direction_image)
+
+    # Normal = perpendicular in 2D
+    normal_image = np.array([-gate_direction_image[1], gate_direction_image[0]])
+
+    # For visualization (draw the normal)
+    normal_tip = (int(centroid[0] + 50 * normal_image[0]), int(centroid[1] + 50 * normal_image[1]))
+    cv2.arrowedLine(cam_copy, (centroid_x, centroid_y), normal_tip, (0, 255, 0), 1)
+
+    # 3D vector in camera frame
+    normal_camera_frame = np.append(normal_image, 0.0)  # Z = 0 in image plane
+
+    img_center_x = img_th.shape[1] / 2  # width / 2
+    img_center_y = img_th.shape[0] / 2  # height / 2
+    p_camera_frame = centroid - np.array([img_center_x, img_center_y])
+    p_camera_frame = np.append(p_camera_frame, 161.013922282)
+
+    
+    return cam_copy, gate_pixels, p_camera_frame, normal_camera_frame
+
+def euler2rotmat(euler_angles):
+    
+    R = np.eye(3)
+    
+    # Here you need to implement the rotation matrix
+    # First calculate the rotation matrix for each angle (roll, pitch, yaw)
+    # Then multiply the matrices together to get the total rotation matrix
+
+    # Inputs:
+    #           euler_angles: A list of 3 Euler angles [roll, pitch, yaw] in radians
+    # Outputs:
+    #           R: A 3x3 numpy array that represents the rotation matrix of the euler angles
+    
+    # --- YOUR CODE HERE ---
+
+    # --- SAMPLE SOLUTION ---
+
+    R_roll = np.array([ [1, 0, 0], 
+                        [0, np.cos(euler_angles[0]), -np.sin(euler_angles[0])],
+                        [0, np.sin(euler_angles[0]), np.cos(euler_angles[0])]])
+    
+    R_pitch = np.array([[np.cos(euler_angles[1]), 0, np.sin(euler_angles[1])],
+                        [0, 1, 0],
+                        [-np.sin(euler_angles[1]), 0, np.cos(euler_angles[1])]])
+    
+    R_yaw = np.array([ [np.cos(euler_angles[2]), -np.sin(euler_angles[2]), 0],
+                          [np.sin(euler_angles[2]), np.cos(euler_angles[2]), 0],
+                          [0, 0, 1]])
+    
+    R = R_yaw @ R_pitch @ R_roll
+
+    return R
 
 class MotionPlanner3D():
     
